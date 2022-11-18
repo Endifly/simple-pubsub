@@ -1,6 +1,6 @@
 // interfaces
 interface IEvent {
-  type(): string;
+  type(): EnumEvent;
   machineId(): string;
 }
 
@@ -10,9 +10,11 @@ interface ISubscriber {
 
 interface IPublishSubscribeService {
   publish(event: IEvent): void;
-  subscribe(type: string, handler: ISubscriber): void;
+  subscribe(type: EnumEvent, handler: ISubscriber): void;
   // unsubscribe ( /* Question 2 - build this feature */ );
 }
+
+type EnumEvent = "sale" | "refill";
 
 // implementations
 class MachineSaleEvent implements IEvent {
@@ -29,7 +31,7 @@ class MachineSaleEvent implements IEvent {
     return this._sold;
   }
 
-  type(): string {
+  type(): EnumEvent {
     return "sale";
   }
 }
@@ -48,7 +50,7 @@ class MachineRefillEvent implements IEvent {
     return this._refill;
   }
 
-  type(): string {
+  type(): EnumEvent {
     return "refill";
   }
 }
@@ -96,28 +98,27 @@ class Machine {
   }
 }
 
-interface IChild {
-  type: string;
-  handler: ISubscriber;
-}
+type ICallbackPool = {
+  [type in EnumEvent]: Array<ISubscriber>;
+};
 
 class PublishSubscribeService implements IPublishSubscribeService {
-  public pool: IChild[] = [];
+  public pool: ICallbackPool;
 
   constructor() {
-    this.pool = [];
+    this.pool = {
+      refill: [],
+      sale: [],
+    };
   }
 
   publish(event: IEvent): void {
-    this.pool.forEach((sub) => {
-      if (sub.type === event.type()) sub.handler.handle(event);
+    this.pool[event.type()].forEach((handler) => {
+      handler.handle(event);
     });
   }
-  subscribe(type: string, handler: ISubscriber): void {
-    this.pool.push({
-      type: type,
-      handler: handler,
-    });
+  subscribe(type: EnumEvent, handler: ISubscriber): void {
+    this.pool[type].push(handler);
   }
 }
 
@@ -161,7 +162,7 @@ const eventGenerator = (): IEvent => {
   pubSubService.subscribe("refill", refillSubscriber);
 
   // create 5 random events
-  const events = [1, 2, 3, 4, 5].map((i) => eventGenerator());
+  const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
 
   // publish the events
   console.log(machines);
