@@ -181,7 +181,7 @@ class PublishSubscribeService implements IPublishSubscribeService {
     this.eventQueue = [];
   }
 
-  private getCallbackPoll(type: EnumEvent): ISubscriber[] {
+  private getCallbackPool(type: EnumEvent): ISubscriber[] {
     const isTypeNotExist = !(type in this.pool);
 
     if (isTypeNotExist) {
@@ -192,7 +192,7 @@ class PublishSubscribeService implements IPublishSubscribeService {
   }
 
   private addEvent(event: IEvent): void {
-    this.eventQueue.unshift(event);
+    this.eventQueue.push(event);
   }
 
   /**
@@ -204,11 +204,11 @@ class PublishSubscribeService implements IPublishSubscribeService {
    */
   private executeEvent(): void {
     while (this.eventQueue.length > 0) {
-      const currEvent = this.eventQueue.pop();
+      const currEvent = this.eventQueue.shift();
 
       if (!currEvent) continue;
 
-      this.getCallbackPoll(currEvent.type()).forEach((handler) => {
+      this.getCallbackPool(currEvent.type()).forEach((handler) => {
         handler.handle(currEvent, this.addEvent.bind(this));
       });
     }
@@ -220,7 +220,7 @@ class PublishSubscribeService implements IPublishSubscribeService {
   }
 
   subscribe(type: EnumEvent, handler: ISubscriber): void {
-    this.getCallbackPoll(type).push(handler);
+    this.getCallbackPool(type).push(handler);
   }
 
   /**
@@ -282,21 +282,21 @@ const eventGenerator = (): IEvent => {
   // console.log(pubSubService);
 
   // create 5 random events
-  const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
+  // const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
 
   // publish the events
   // console.log(machines);
-  events.map((event) => pubSubService.publish(event));
+  // events.map((event) => pubSubService.publish(event));
 
-  // pubSubService.publish(new MachineSaleEvent(8, "002"));
-  // pubSubService.publish(new MachineSaleEvent(7, "003"));
-  // pubSubService.publish(new MachineRefillEvent(5, "002"));
-  // pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
 
-  // pubSubService.publish(new MachineSaleEvent(7, "003"));
-  // pubSubService.publish(new MachineRefillEvent(5, "003"));
-  // pubSubService.publish(new MachineSaleEvent(7, "003"));
-  // pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
 
   // console.log(machines);
 })();
