@@ -4,8 +4,10 @@ interface IEvent {
   machineId(): string;
 }
 
+type IAddEvent = (event: IEvent) => void;
+
 interface ISubscriber {
-  handle(event: IEvent): void;
+  handle(event: IEvent, fire?: IAddEvent): void;
 }
 
 interface IPublishSubscribeService {
@@ -14,7 +16,7 @@ interface IPublishSubscribeService {
   // unsubscribe ( /* Question 2 - build this feature */ );
 }
 
-type EnumEvent = "sale" | "refill";
+type EnumEvent = "sale" | "refill" | "stock_low" | "stock_ok";
 
 // implementations
 class MachineSaleEvent implements IEvent {
@@ -55,6 +57,52 @@ class MachineRefillEvent implements IEvent {
   }
 }
 
+class LowStockWarningEvent implements IEvent {
+  constructor(private readonly _machineId: string) {}
+
+  type(): EnumEvent {
+    return "stock_low";
+  }
+  machineId(): string {
+    return this._machineId;
+  }
+}
+
+class StockLevelOkEvent implements IEvent {
+  constructor(private readonly _machineId: string) {}
+
+  type(): EnumEvent {
+    return "stock_ok";
+  }
+  machineId(): string {
+    return this._machineId;
+  }
+}
+
+class MachineStockWarningSubscriber implements ISubscriber {
+  public machines: Machine[];
+
+  constructor(machines: Machine[]) {
+    this.machines = machines;
+  }
+
+  handle(event: LowStockWarningEvent): void {
+    console.log("LowStockWarningEvent fired on machine : ", event.machineId());
+  }
+}
+
+class MachineStockOkSubscriber implements ISubscriber {
+  public machines: Machine[];
+
+  constructor(machines: Machine[]) {
+    this.machines = machines;
+  }
+
+  handle(event: StockLevelOkEvent): void {
+    console.log("StockLevelOkEvent fired on machine : ", event.machineId());
+  }
+}
+
 class MachineSaleSubscriber implements ISubscriber {
   public machines: Machine[];
 
@@ -62,11 +110,14 @@ class MachineSaleSubscriber implements ISubscriber {
     this.machines = machines;
   }
 
-  handle(event: MachineSaleEvent): void {
+  handle(event: MachineSaleEvent, add: IAddEvent): void {
     // this.machines[2].stockLevel -= event.getSoldQuantity();
     this.machines.forEach((machine) => {
       if (machine.id === event.machineId()) {
         machine.stockLevel -= event.getSoldQuantity();
+        if (machine.stockLevel < 3) {
+          add(new LowStockWarningEvent(machine.id));
+        }
       }
     });
   }
@@ -79,10 +130,13 @@ class MachineRefillSubscriber implements ISubscriber {
     this.machines = machines;
   }
 
-  handle(event: MachineRefillEvent): void {
+  handle(event: MachineRefillEvent, add: IAddEvent): void {
     this.machines.forEach((machine) => {
       if (machine.id === event.machineId()) {
         machine.stockLevel += event.getRefillQuantity();
+        if (machine.stockLevel > 3) {
+          add(new StockLevelOkEvent(machine.id));
+        }
       }
     });
   }
@@ -104,19 +158,39 @@ type ICallbackPool = {
 
 class PublishSubscribeService implements IPublishSubscribeService {
   public pool: ICallbackPool;
+  private eventStack: IEvent[];
 
   constructor() {
     this.pool = {
       refill: [],
       sale: [],
+      stock_low: [],
+      stock_ok: [],
     };
+    this.eventStack = [];
+  }
+
+  addEvent(event: IEvent): void {
+    this.eventStack.push(event);
+  }
+
+  executeEvent(): void {
+    while (this.eventStack.length > 0) {
+      const currEvent = this.eventStack.pop();
+
+      if (!currEvent) continue;
+
+      this.pool[currEvent.type()].forEach((handler) => {
+        handler.handle(currEvent, this.addEvent.bind(this));
+      });
+    }
   }
 
   publish(event: IEvent): void {
-    this.pool[event.type()].forEach((handler) => {
-      handler.handle(event);
-    });
+    this.addEvent(event);
+    this.executeEvent();
   }
+
   subscribe(type: EnumEvent, handler: ISubscriber): void {
     this.pool[type].push(handler);
   }
@@ -155,11 +229,15 @@ const eventGenerator = (): IEvent => {
   // create a machine sale event subscriber. inject the machines (all subscribers should do this)
   const saleSubscriber = new MachineSaleSubscriber(machines);
   const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber = new MachineStockOkSubscriber(machines);
 
   // create the PubSub service
   const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
   pubSubService.subscribe("sale", saleSubscriber);
   pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber);
 
   // create 5 random events
   const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
