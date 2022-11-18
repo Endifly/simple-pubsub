@@ -14,7 +14,7 @@ interface IPublishSubscribeService {
   publish(event: IEvent): void;
   subscribe(type: EnumEvent, handler: ISubscriber): void;
   // unsubscribe ( /* Question 2 - build this feature */ );
-  unsubscribe(type: EnumEvent, handler: ISubscriber): void;
+  unsubscribe(handler: ISubscriber): void;
 }
 
 type EnumEvent = "sale" | "refill" | "stock_low" | "stock_ok";
@@ -151,15 +151,16 @@ class Machine {
   }
 
   sale(saleAmount: number): boolean {
-    if (saleAmount < 0) throw Error("sold amount should be 0 or more");
+    if (saleAmount < 0) throw Error("sale amount should be alteast 0");
+    let prev = this.stockLevel;
     this.stockLevel = Math.max(0, this.stockLevel - saleAmount);
 
-    if (this.stockLevel < 3) return true;
+    if (prev >= 3 && this.stockLevel < 3) return true;
     return false;
   }
 
   refill(refillAmount: number) {
-    if (refillAmount < 0) throw Error("sold amount should be 0 or more");
+    if (refillAmount < 0) throw Error("refill amount should be atleast 0");
     let prev = this.stockLevel;
     this.stockLevel += refillAmount;
 
@@ -169,7 +170,7 @@ class Machine {
 }
 
 type ICallbackPool = {
-  [type in EnumEvent]?: Array<ISubscriber>;
+  [type in EnumEvent]?: Set<ISubscriber>;
 };
 
 class PublishSubscribeService implements IPublishSubscribeService {
@@ -181,35 +182,26 @@ class PublishSubscribeService implements IPublishSubscribeService {
     this.eventQueue = [];
   }
 
-  private getCallbackPool(type: EnumEvent): ISubscriber[] {
+  private getCallbackPool(type: EnumEvent): Set<ISubscriber> {
     const isTypeNotExist = !(type in this.pool);
 
-    if (isTypeNotExist) {
-      this.pool[type] = [];
-    }
+    if (isTypeNotExist) this.pool[type] = new Set();
 
-    return this.pool[type] as ISubscriber[];
+    return this.pool[type] as Set<ISubscriber>;
   }
 
   private addEvent(event: IEvent): void {
     this.eventQueue.push(event);
   }
 
-  /**
-   * execute event until queue is empty
-   *
-   * some event can cause new event such as refill can cause 'stockOk'
-   * so if those event want to fire new event, use this.addEvent to inject new event to queue before executing has completed
-   * so those event will be called at next loop after currEvent has finished
-   */
   private executeEvent(): void {
     while (this.eventQueue.length > 0) {
-      const currEvent = this.eventQueue.shift();
+      const event = this.eventQueue.shift();
 
-      if (!currEvent) continue;
+      if (!event) continue;
 
-      this.getCallbackPool(currEvent.type()).forEach((handler) => {
-        handler.handle(currEvent, this.addEvent.bind(this));
+      this.getCallbackPool(event.type()).forEach((handler) => {
+        handler.handle(event, this.addEvent.bind(this));
       });
     }
   }
@@ -220,18 +212,29 @@ class PublishSubscribeService implements IPublishSubscribeService {
   }
 
   subscribe(type: EnumEvent, handler: ISubscriber): void {
-    this.getCallbackPool(type).push(handler);
+    if (type === "refill" && !(handler instanceof MachineRefillSubscriber)) {
+      throw Error("Invalid subscribe instant");
+    }
+    if (type === "sale" && !(handler instanceof MachineSaleSubscriber)) {
+      throw Error("Invalid subscribe instant");
+    }
+    if (
+      type === "stock_low" &&
+      !(handler instanceof MachineStockWarningSubscriber)
+    ) {
+      throw Error("Invalid subscribe instant");
+    }
+    if (type === "stock_ok" && !(handler instanceof MachineStockOkSubscriber)) {
+      throw Error("Invalid subscribe instant");
+    }
+
+    this.getCallbackPool(type).add(handler);
   }
 
-  /**
-   * filter out handler that has the same address and type of targetHandler
-   */
-  unsubscribe(type: EnumEvent, unsubHandler: ISubscriber): void {
-    if (type in this.pool) {
-      this.pool[type] = this.pool[type]?.filter(
-        (handler) => handler !== unsubHandler
-      );
-    }
+  unsubscribe(handler: ISubscriber): void {
+    Object.keys(this.pool).forEach((keyPool) => {
+      this.pool[keyPool as EnumEvent]?.delete(handler);
+    });
   }
 }
 
@@ -256,8 +259,265 @@ const eventGenerator = (): IEvent => {
   return new MachineRefillEvent(refillQty, randomMachine());
 };
 
+const title = (title: string) => console.log(`${title}\n`);
+
 // program
-(async () => {
+const case1 = async () => {
+  title("normal case");
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case2 = async () => {
+  title("duplicate sub with same subscriber, it should not run twice");
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case3 = async () => {
+  title("unsub stock_ok since start");
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+  pubSubService.unsubscribe(stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case4 = async () => {
+  title("unsub stock_ok while publishing");
+
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.unsubscribe(stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case5 = async () => {
+  title("unsub refill, machine should not be able to refill");
+
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+  pubSubService.unsubscribe(refillSubscriber);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case6 = async () => {
+  title(
+    "unsub refill while publishing, machine should be able to refill only 1 time"
+  );
+
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(8, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.unsubscribe(refillSubscriber);
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case7 = async () => {
+  title("sub refill while publishing");
+
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+
+  pubSubService.publish(new MachineSaleEvent(8, "002"));
+  pubSubService.publish(new MachineSaleEvent(8, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "002"));
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+  pubSubService.publish(new MachineSaleEvent(7, "003"));
+  pubSubService.publish(new MachineRefillEvent(5, "003"));
+};
+
+const case8 = async () => {
+  title("unsub");
+
+  const machines: Machine[] = [
+    new Machine("001"),
+    new Machine("002"),
+    new Machine("003"),
+  ];
+
+  const saleSubscriber = new MachineSaleSubscriber(machines);
+  const refillSubscriber = new MachineRefillSubscriber(machines);
+  const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+
+  const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
+  pubSubService.subscribe("sale", saleSubscriber);
+  pubSubService.subscribe("refill", refillSubscriber);
+  pubSubService.subscribe("stock_low", stockWarningSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+  console.log(pubSubService);
+
+  pubSubService.unsubscribe(stockOkSubscriber1);
+  console.log("unsub 1", pubSubService);
+
+  pubSubService.unsubscribe(stockWarningSubscriber);
+  console.log("unsub 2", pubSubService);
+
+  pubSubService.unsubscribe(saleSubscriber);
+  pubSubService.unsubscribe(refillSubscriber);
+  console.log(pubSubService);
+};
+
+const main = async () => {
+  title("main");
   // create 3 machines with a quantity of 10 stock
   const machines: Machine[] = [
     new Machine("001"),
@@ -270,7 +530,6 @@ const eventGenerator = (): IEvent => {
   const refillSubscriber = new MachineRefillSubscriber(machines);
   const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
   const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
-  // const stockOkSubscriber2 = new MachineStockOkSubscriber(machines);
 
   // create the PubSub service
   const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
@@ -279,24 +538,18 @@ const eventGenerator = (): IEvent => {
   pubSubService.subscribe("stock_low", stockWarningSubscriber);
   pubSubService.subscribe("stock_ok", stockOkSubscriber1);
 
-  // console.log(pubSubService);
-
   // create 5 random events
-  // const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
+  const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
 
   // publish the events
-  // console.log(machines);
-  // events.map((event) => pubSubService.publish(event));
+  events.map((event) => pubSubService.publish(event));
+};
 
-  pubSubService.publish(new MachineSaleEvent(8, "002"));
-  pubSubService.publish(new MachineSaleEvent(7, "003"));
-  pubSubService.publish(new MachineRefillEvent(5, "002"));
-  pubSubService.publish(new MachineRefillEvent(5, "003"));
+(async () => {
+  const cases = [case1, case2, case3, case4, case5, case6, case7, case8, main];
 
-  pubSubService.publish(new MachineSaleEvent(7, "003"));
-  pubSubService.publish(new MachineRefillEvent(5, "003"));
-  pubSubService.publish(new MachineSaleEvent(7, "003"));
-  pubSubService.publish(new MachineRefillEvent(5, "003"));
-
-  // console.log(machines);
+  for (let i = 0; i < cases.length; i++) {
+    console.log(`-------------- case ${i + 1} --------------`);
+    await cases[i]();
+  }
 })();
