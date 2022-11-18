@@ -14,6 +14,7 @@ interface IPublishSubscribeService {
   publish(event: IEvent): void;
   subscribe(type: EnumEvent, handler: ISubscriber): void;
   // unsubscribe ( /* Question 2 - build this feature */ );
+  unsubscribe(type: EnumEvent, handler: ISubscriber): void;
 }
 
 type EnumEvent = "sale" | "refill" | "stock_low" | "stock_ok";
@@ -114,7 +115,7 @@ class MachineSaleSubscriber implements ISubscriber {
     // this.machines[2].stockLevel -= event.getSoldQuantity();
     this.machines.forEach((machine) => {
       if (machine.id === event.machineId()) {
-        const isLowStock = machine.soldStock(event.getSoldQuantity());
+        const isLowStock = machine.sale(event.getSoldQuantity());
 
         if (isLowStock) lazyFire(new LowStockWarningEvent(machine.id));
       }
@@ -132,7 +133,7 @@ class MachineRefillSubscriber implements ISubscriber {
   handle(event: MachineRefillEvent, lazyFire: ILazyFireEvent): void {
     this.machines.forEach((machine) => {
       if (machine.id === event.machineId()) {
-        const isRefilled = machine.refillStock(event.getRefillQuantity());
+        const isRefilled = machine.refill(event.getRefillQuantity());
 
         if (isRefilled) lazyFire(new StockLevelOkEvent(machine.id));
       }
@@ -151,23 +152,21 @@ class Machine {
     this.isLowStock = false;
   }
 
-  soldStock(soldAmount: number): boolean {
-    if (soldAmount < 0) throw Error("sold amount should be 0 or more");
-    this.stockLevel = Math.max(0, this.stockLevel - soldAmount);
+  sale(saleAmount: number): boolean {
+    if (saleAmount < 0) throw Error("sold amount should be 0 or more");
+    this.stockLevel = Math.max(0, this.stockLevel - saleAmount);
 
     if (this.stockLevel < 3) this.isLowStock = true;
-
     return this.isLowStock;
   }
 
-  refillStock(refillAmount: number) {
+  refill(refillAmount: number) {
     if (refillAmount < 0) throw Error("sold amount should be 0 or more");
     this.stockLevel += refillAmount;
 
-    const isRefilled = this.isLowStock && this.stockLevel > 3;
+    const isRefilled = this.isLowStock && this.stockLevel >= 3;
 
     if (this.stockLevel >= 3) this.isLowStock = false;
-
     return isRefilled;
   }
 }
@@ -178,11 +177,11 @@ type ICallbackPool = {
 
 class PublishSubscribeService implements IPublishSubscribeService {
   public pool: ICallbackPool;
-  private eventStack: IEvent[];
+  private eventQueue: IEvent[];
 
   constructor() {
     this.pool = {};
-    this.eventStack = [];
+    this.eventQueue = [];
   }
 
   private getCallbackPoll(type: EnumEvent): ISubscriber[] {
@@ -196,21 +195,22 @@ class PublishSubscribeService implements IPublishSubscribeService {
   }
 
   private addEvent(event: IEvent): void {
-    this.eventStack.unshift(event);
+    this.eventQueue.unshift(event);
   }
 
+  /**
+   * execute event until queue empty
+   *
+   * some event can cause new event such as refill can cause 'stockOk'
+   * so if their event want to fire new event, this.addEvent will be called and add event to stack
+   * so those event will be called at next loop after currEvent has finished
+   */
   private executeEvent(): void {
-    while (this.eventStack.length > 0) {
-      const currEvent = this.eventStack.pop();
-      // console.log("curr", currEvent);
+    while (this.eventQueue.length > 0) {
+      const currEvent = this.eventQueue.pop();
 
       if (!currEvent) continue;
 
-      /**
-       * some event can cause new event such as refill can cause 'stockOk'
-       * so if their event want to fire new event, this.addEvent will be called and add event to stack
-       * so those event will be called at next loop after currEvent has finished
-       */
       this.getCallbackPoll(currEvent.type()).forEach((handler) => {
         handler.handle(currEvent, this.addEvent.bind(this));
       });
@@ -224,6 +224,19 @@ class PublishSubscribeService implements IPublishSubscribeService {
 
   subscribe(type: EnumEvent, handler: ISubscriber): void {
     this.getCallbackPoll(type).push(handler);
+  }
+
+  /**
+   * filter out handler that has the same address and type of targetHandler
+   * @param type
+   * @param unsubHandler
+   */
+  unsubscribe(type: EnumEvent, unsubHandler: ISubscriber): void {
+    if (type in this.pool) {
+      this.pool[type] = this.pool[type]?.filter(
+        (handler) => handler !== unsubHandler
+      );
+    }
   }
 }
 
@@ -261,21 +274,25 @@ const eventGenerator = (): IEvent => {
   const saleSubscriber = new MachineSaleSubscriber(machines);
   const refillSubscriber = new MachineRefillSubscriber(machines);
   const stockWarningSubscriber = new MachineStockWarningSubscriber(machines);
-  const stockOkSubscriber = new MachineStockOkSubscriber(machines);
+  const stockOkSubscriber1 = new MachineStockOkSubscriber(machines);
+  // const stockOkSubscriber2 = new MachineStockOkSubscriber(machines);
 
   // create the PubSub service
   const pubSubService: IPublishSubscribeService = new PublishSubscribeService();
   pubSubService.subscribe("sale", saleSubscriber);
   pubSubService.subscribe("refill", refillSubscriber);
   pubSubService.subscribe("stock_low", stockWarningSubscriber);
-  pubSubService.subscribe("stock_ok", stockOkSubscriber);
+  pubSubService.subscribe("stock_ok", stockOkSubscriber1);
+
+  console.log(pubSubService);
 
   // create 5 random events
-  const events = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(() => eventGenerator());
+  // const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
 
   // publish the events
   // console.log(machines);
-  events.map((event) => pubSubService.publish(event));
+  // events.map((event) => pubSubService.publish(event));
+
   // pubSubService.publish(new MachineSaleEvent(8, "002"));
   // pubSubService.publish(new MachineSaleEvent(7, "003"));
   // pubSubService.publish(new MachineRefillEvent(5, "002"));
