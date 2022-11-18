@@ -145,29 +145,26 @@ class MachineRefillSubscriber implements ISubscriber {
 class Machine {
   public stockLevel = 10;
   public id: string;
-  public isLowStock: boolean;
 
   constructor(id: string) {
     this.id = id;
-    this.isLowStock = false;
   }
 
   sale(saleAmount: number): boolean {
     if (saleAmount < 0) throw Error("sold amount should be 0 or more");
     this.stockLevel = Math.max(0, this.stockLevel - saleAmount);
 
-    if (this.stockLevel < 3) this.isLowStock = true;
-    return this.isLowStock;
+    if (this.stockLevel < 3) return true;
+    return false;
   }
 
   refill(refillAmount: number) {
     if (refillAmount < 0) throw Error("sold amount should be 0 or more");
+    let prev = this.stockLevel;
     this.stockLevel += refillAmount;
 
-    const isRefilled = this.isLowStock && this.stockLevel >= 3;
-
-    if (this.stockLevel >= 3) this.isLowStock = false;
-    return isRefilled;
+    if (prev < 3 && this.stockLevel >= 3) return true;
+    return false;
   }
 }
 
@@ -199,10 +196,10 @@ class PublishSubscribeService implements IPublishSubscribeService {
   }
 
   /**
-   * execute event until queue empty
+   * execute event until queue is empty
    *
    * some event can cause new event such as refill can cause 'stockOk'
-   * so if their event want to fire new event, this.addEvent will be called and add event to stack
+   * so if those event want to fire new event, use this.addEvent to inject new event to queue before executing has completed
    * so those event will be called at next loop after currEvent has finished
    */
   private executeEvent(): void {
@@ -228,8 +225,6 @@ class PublishSubscribeService implements IPublishSubscribeService {
 
   /**
    * filter out handler that has the same address and type of targetHandler
-   * @param type
-   * @param unsubHandler
    */
   unsubscribe(type: EnumEvent, unsubHandler: ISubscriber): void {
     if (type in this.pool) {
@@ -284,14 +279,14 @@ const eventGenerator = (): IEvent => {
   pubSubService.subscribe("stock_low", stockWarningSubscriber);
   pubSubService.subscribe("stock_ok", stockOkSubscriber1);
 
-  console.log(pubSubService);
+  // console.log(pubSubService);
 
   // create 5 random events
-  // const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
+  const events = [1, 2, 3, 4, 5].map(() => eventGenerator());
 
   // publish the events
   // console.log(machines);
-  // events.map((event) => pubSubService.publish(event));
+  events.map((event) => pubSubService.publish(event));
 
   // pubSubService.publish(new MachineSaleEvent(8, "002"));
   // pubSubService.publish(new MachineSaleEvent(7, "003"));
